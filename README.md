@@ -1,66 +1,88 @@
+# C11_CAP3 Capstone Project
+
+Dialogue summarization using a BERT encoder-decoder model on the SAMSum dataset.
+
+---
+
 ## Table of Contents
-- [Project Overview](#project-overview)
-- [Methods](#methods)
-- [Results](#results)
+
+1. [Overview](#overview)
+2. [Dataset](#dataset)
+3. [Approach](#approach)
+4. [Results](#results)
+5. [Limitations and Next Steps](#limitations-and-next-steps)
+6. [How to Run](#how-to-run)
+7. [References](#references)
 
 ---
 
-## Project Overview
+## Overview
 
-This is a proof-of-concept for **automatic conversation summarization**.
+This project builds an abstractive text summarization model for Acme Communications. The goal is to automatically generate short summaries from multi-speaker chat conversations, reducing information overload in enterprise messaging.
 
-Acme Communications users were losing important information in long group-chat threads. The goal was to build a model that reads a multi-speaker dialogue and generates a short, clear summary.
-
-- **Dataset:** SAMSum — 16,000 chat dialogues with human-written summaries
-- **Model:** BERT Encoder-Decoder (`bert-base-uncased`)
-- **Training size:** 500 samples (PoC only)
-- **Hardware:** GPU (CUDA 12.8)
+The full pipeline follows the CRISP-DM methodology: data understanding, preprocessing, model training, evaluation, and analysis.
 
 ---
 
-## Methods
+## Dataset
 
-**1. Data Analysis**
+**SAMSum Corpus** (Gliwa et al., 2019)
+
+- ~16,000 English messenger-style dialogues with human-written summaries
+- Split: 14,732 train / 818 validation / 819 test
 - Median dialogue length: 73 words
 - Median summary length: 18 words (~4x compression)
-- Most dialogues have 2–3 speakers
+- Most dialogues fit within BERT's 512-token limit (~99% are under 350 words)
 
-**2. Preprocessing**
-- Tokenized with `BertTokenizer`
-- Max input: 512 tokens / Max output: 128 tokens
-- Padding tokens replaced with `-100` so they are ignored in loss
+---
 
-**3. Model**
-- Encoder and decoder both initialized from `bert-base-uncased`
-- Cross-attention layers are randomly initialized (not in the original checkpoint)
-- Decoding: beam search, width 4
+## Approach
 
-**4. Training**
-- 3 epochs, batch size 4, learning rate 5e-5
-- Mixed precision (FP16)
-- Total training time: ~4.4 minutes
+**Architecture**: `bert-base-uncased` encoder + `bert-base-uncased` decoder (Hugging Face `EncoderDecoderModel`)
+
+The encoder reads the full dialogue and produces contextual hidden states. The decoder generates the summary token by token using cross-attention over those hidden states.
+
+**Key preprocessing decisions**:
+- `[CLS]` mapped to BOS (id=101), `[SEP]` mapped to EOS (id=102)
+- Max encoder tokens: 512, max decoder tokens: 128
+- Padding labels set to -100 (ignored in cross-entropy loss)
+
+**Training setup**:
+
+| Parameter | Value |
+|---|---|
+| Training samples | 500 (PoC subset) |
+| Epochs | 3 |
+| Learning rate | 5e-5 |
+| Batch size | 4 |
+| Warmup steps | 100 |
+| Decoding | Beam search, width=4 |
+| Best checkpoint | Selected by validation ROUGE-L |
 
 ---
 
 ## Results
 
-| Metric | Target | Actual |
-|--------|--------|--------|
-| ROUGE-1 | ≥ 38% | 13.66% |
-| ROUGE-2 | — | 2.06% |
-| ROUGE-L | ≥ 30% | 12.03% |
+Evaluated on the full SAMSum test set (819 samples).
 
-**Why the scores are low:**
-The model missed both targets. The main reason is that the 12 cross-attention layers — which let the decoder read the encoder output — start from random weights. 500 training samples are not enough to learn them properly, so the model ignores the input and generates unrelated text.
+| Model | ROUGE-1 | ROUGE-2 | ROUGE-L |
+|---|---|---|---|
+| **BERT-to-BERT (ours, 500 samples)** | **13.65%** | **1.88%** | **11.84%** |
+| BERT-to-BERT (literature, full 14.7k) | 38.31% | 15.22% | 34.67% |
+| BART-base (literature, full 14.7k) | 44.16% | 21.28% | 41.19% |
+| BART-large (literature, full 14.7k) | 45.94% | 22.06% | 43.42% |
 
-**Comparison with literature (full 14,732-sample training):**
+The model did not meet the target scores (ROUGE-1 >= 38%, ROUGE-L >= 30%). Outputs are hallucinated text unrelated to the input — for example, generating "john is going to his parents ." for every dialogue. Training loss decreased correctly (8.14 → 5.04), but the model learned language patterns rather than input-conditional generation.
 
-| Model | ROUGE-1 | ROUGE-L |
-|-------|---------|---------|
-| BERT-to-BERT (ours, 500 samples) | 13.66% | 12.03% |
-| BERT-to-BERT (full data) | 38.31% | 34.67% |
-| BART-large (full data) | 45.94% | 43.42% |
+**Root cause**: BERT's cross-attention layers are absent from the pretrained checkpoint and randomly initialized. 500 samples is not enough to train them from scratch.
 
-**To improve:**
-- Train on the full dataset (14,732 samples)
-- Use a pre-trained seq2seq model like `facebook/bart-large-cnn` to avoid the cold-start problem
+---
+
+## Limitations and Next Steps
+
+| Priority | Action | Expected Impact |
+|---|---|---|
+| High | Train on full 14,732 samples | ROUGE-1 ~38% per literature |
+| High | Switch to `facebook/bart-base` | Pre-trained cross-attention; better with less data |
+| Medium | Add BERTScore evaluation | More meaningful than ROUGE alone |
+| Medium | Add cosine LR decay | Stabler training on larger dataset |
